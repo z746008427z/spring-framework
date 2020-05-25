@@ -22,6 +22,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicInteger;
+
 import javax.net.ssl.SSLSession;
 
 import io.undertow.connector.ByteBufferPool;
@@ -37,7 +38,6 @@ import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.core.io.buffer.DataBufferWrapper;
 import org.springframework.core.io.buffer.PooledDataBuffer;
 import org.springframework.http.HttpCookie;
-import org.springframework.http.HttpHeaders;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 import org.springframework.util.LinkedMultiValueMap;
@@ -62,7 +62,7 @@ class UndertowServerHttpRequest extends AbstractServerHttpRequest {
 	public UndertowServerHttpRequest(HttpServerExchange exchange, DataBufferFactory bufferFactory)
 			throws URISyntaxException {
 
-		super(initUri(exchange), "", initHeaders(exchange));
+		super(initUri(exchange), "", new UndertowHeadersAdapter(exchange.getRequestHeaders()));
 		this.exchange = exchange;
 		this.body = new RequestBodyPublisher(exchange, bufferFactory);
 		this.body.registerListeners(exchange);
@@ -74,10 +74,6 @@ class UndertowServerHttpRequest extends AbstractServerHttpRequest {
 		String query = exchange.getQueryString();
 		String requestUriAndQuery = (StringUtils.hasLength(query) ? requestURL + "?" + query : requestURL);
 		return new URI(requestUriAndQuery);
-	}
-
-	private static HttpHeaders initHeaders(HttpServerExchange exchange) {
-		return new HttpHeaders(new UndertowHeadersAdapter(exchange.getRequestHeaders()));
 	}
 
 	@Override
@@ -99,6 +95,11 @@ class UndertowServerHttpRequest extends AbstractServerHttpRequest {
 	@Override
 	public InetSocketAddress getRemoteAddress() {
 		return this.exchange.getSourceAddress();
+	}
+
+	@Override
+	public InetSocketAddress getLocalAddress() {
+		return this.exchange.getDestinationAddress();
 	}
 
 	@Nullable

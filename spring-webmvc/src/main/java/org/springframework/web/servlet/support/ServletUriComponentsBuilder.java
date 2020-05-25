@@ -70,7 +70,7 @@ public class ServletUriComponentsBuilder extends UriComponentsBuilder {
 	}
 
 
-	// Factory methods based on a HttpServletRequest
+	// Factory methods based on an HttpServletRequest
 
 	/**
 	 * Prepare a builder from the host, port, scheme, and context path of the
@@ -92,7 +92,7 @@ public class ServletUriComponentsBuilder extends UriComponentsBuilder {
 	 */
 	public static ServletUriComponentsBuilder fromServletMapping(HttpServletRequest request) {
 		ServletUriComponentsBuilder builder = fromContextPath(request);
-		if (StringUtils.hasText(new UrlPathHelper().getPathWithinServletMapping(request))) {
+		if (StringUtils.hasText(UrlPathHelper.defaultInstance.getPathWithinServletMapping(request))) {
 			builder.path(request.getServletPath());
 		}
 		return builder;
