@@ -242,6 +242,7 @@ public class ResourceHttpRequestHandlerTests {
 	}
 
 	@Test  // SPR-13658
+	@SuppressWarnings("deprecation")
 	public void getResourceWithRegisteredMediaType() throws Exception {
 		ContentNegotiationManagerFactoryBean factory = new ContentNegotiationManagerFactoryBean();
 		factory.addMediaType("bar", new MediaType("foo", "bar"));
@@ -263,6 +264,7 @@ public class ResourceHttpRequestHandlerTests {
 	}
 
 	@Test  // SPR-14577
+	@SuppressWarnings("deprecation")
 	public void getMediaTypeWithFavorPathExtensionOff() throws Exception {
 		ContentNegotiationManagerFactoryBean factory = new ContentNegotiationManagerFactoryBean();
 		factory.setFavorPathExtension(false);
@@ -663,6 +665,18 @@ public class ResourceHttpRequestHandlerTests {
 		this.handler.handleRequest(this.request, this.response);
 
 		assertThat(this.response.getHeader("Cache-Control")).isEqualTo("max-age=3600");
+	}
+
+	@Test
+	public void ignoreLastModified() throws Exception {
+		this.request.setAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE, "foo.css");
+		this.handler.setUseLastModified(false);
+		this.handler.handleRequest(this.request, this.response);
+
+		assertThat(this.response.getContentType()).isEqualTo("text/css");
+		assertThat(this.response.getContentLength()).isEqualTo(17);
+		assertThat(this.response.containsHeader("Last-Modified")).isFalse();
+		assertThat(this.response.getContentAsString()).isEqualTo("h1 { color:red; }");
 	}
 
 

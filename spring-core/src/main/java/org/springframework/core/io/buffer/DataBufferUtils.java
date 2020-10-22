@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,6 +39,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.publisher.BaseSubscriber;
@@ -59,6 +61,8 @@ import org.springframework.util.Assert;
  * @since 5.0
  */
 public abstract class DataBufferUtils {
+
+	private final static Log logger = LogFactory.getLog(DataBufferUtils.class);
 
 	private static final Consumer<DataBuffer> RELEASE_CONSUMER = DataBufferUtils::release;
 
@@ -494,7 +498,16 @@ public abstract class DataBufferUtils {
 		if (dataBuffer instanceof PooledDataBuffer) {
 			PooledDataBuffer pooledDataBuffer = (PooledDataBuffer) dataBuffer;
 			if (pooledDataBuffer.isAllocated()) {
-				return pooledDataBuffer.release();
+				try {
+					return pooledDataBuffer.release();
+				}
+				catch (IllegalStateException ex) {
+					// Avoid dependency on Netty: IllegalReferenceCountException
+					if (logger.isDebugEnabled()) {
+						logger.debug("Failed to release PooledDataBuffer: " + dataBuffer, ex);
+					}
+					return false;
+				}
 			}
 		}
 		return false;
@@ -523,7 +536,6 @@ public abstract class DataBufferUtils {
 	 * @return a buffer that is composed from the {@code dataBuffers} argument
 	 * @since 5.0.3
 	 */
-	@SuppressWarnings("unchecked")
 	public static Mono<DataBuffer> join(Publisher<? extends DataBuffer> dataBuffers) {
 		return join(dataBuffers, -1);
 	}
@@ -671,9 +683,7 @@ public abstract class DataBufferUtils {
 
 		private final AtomicLong position;
 
-		private final AtomicBoolean reading = new AtomicBoolean();
-
-		private final AtomicBoolean disposed = new AtomicBoolean();
+		private final AtomicReference<State> state = new AtomicReference<>(State.IDLE);
 
 		public ReadCompletionHandler(AsynchronousFileChannel channel,
 				FluxSink<DataBuffer> sink, long position, DataBufferFactory dataBufferFactory, int bufferSize) {
@@ -685,39 +695,68 @@ public abstract class DataBufferUtils {
 			this.bufferSize = bufferSize;
 		}
 
-		public void read() {
-			if (this.sink.requestedFromDownstream() > 0 &&
-					isNotDisposed() &&
-					this.reading.compareAndSet(false, true)) {
-				DataBuffer dataBuffer = this.dataBufferFactory.allocateBuffer(this.bufferSize);
-				ByteBuffer byteBuffer = dataBuffer.asByteBuffer(0, this.bufferSize);
-				this.channel.read(byteBuffer, this.position.get(), dataBuffer, this);
+		/**
+		 * Invoked when Reactive Streams consumer signals demand.
+		 */
+		public void request(long n) {
+			tryRead();
+		}
+
+		/**
+		 * Invoked when Reactive Streams consumer cancels.
+		 */
+		public void cancel() {
+			this.state.getAndSet(State.DISPOSED);
+
+			// According java.nio.channels.AsynchronousChannel "if an I/O operation is outstanding
+			// on the channel and the channel's close method is invoked, then the I/O operation
+			// fails with the exception AsynchronousCloseException". That should invoke the failed
+			// callback below and the current DataBuffer should be released.
+
+			closeChannel(this.channel);
+		}
+
+		private void tryRead() {
+			if (this.sink.requestedFromDownstream() > 0 && this.state.compareAndSet(State.IDLE, State.READING)) {
+				read();
 			}
+		}
+
+		private void read() {
+			DataBuffer dataBuffer = this.dataBufferFactory.allocateBuffer(this.bufferSize);
+			ByteBuffer byteBuffer = dataBuffer.asByteBuffer(0, this.bufferSize);
+			this.channel.read(byteBuffer, this.position.get(), dataBuffer, this);
 		}
 
 		@Override
 		public void completed(Integer read, DataBuffer dataBuffer) {
-			if (isNotDisposed()) {
-				if (read != -1) {
-					this.position.addAndGet(read);
-					dataBuffer.writePosition(read);
-					this.sink.next(dataBuffer);
-					this.reading.set(false);
-					read();
-				}
-				else {
-					release(dataBuffer);
-					closeChannel(this.channel);
-					if (this.disposed.compareAndSet(false, true)) {
-						this.sink.complete();
-					}
-					this.reading.set(false);
-				}
-			}
-			else {
+			if (this.state.get().equals(State.DISPOSED)) {
 				release(dataBuffer);
 				closeChannel(this.channel);
-				this.reading.set(false);
+				return;
+			}
+
+			if (read == -1) {
+				release(dataBuffer);
+				closeChannel(this.channel);
+				this.state.set(State.DISPOSED);
+				this.sink.complete();
+				return;
+			}
+
+			this.position.addAndGet(read);
+			dataBuffer.writePosition(read);
+			this.sink.next(dataBuffer);
+
+			// Stay in READING mode if there is demand
+			if (this.sink.requestedFromDownstream() > 0) {
+				read();
+				return;
+			}
+
+			// Release READING mode and then try again in case of concurrent "request"
+			if (this.state.compareAndSet(State.READING, State.IDLE)) {
+				tryRead();
 			}
 		}
 
@@ -725,26 +764,12 @@ public abstract class DataBufferUtils {
 		public void failed(Throwable exc, DataBuffer dataBuffer) {
 			release(dataBuffer);
 			closeChannel(this.channel);
-			if (this.disposed.compareAndSet(false, true)) {
-				this.sink.error(exc);
-			}
-			this.reading.set(false);
+			this.state.set(State.DISPOSED);
+			this.sink.error(exc);
 		}
 
-		public void request(long n) {
-			read();
-		}
-
-		public void cancel() {
-			if (this.disposed.compareAndSet(false, true)) {
-				if (!this.reading.get()) {
-					closeChannel(this.channel);
-				}
-			}
-		}
-
-		private boolean isNotDisposed() {
-			return !this.disposed.get();
+		private enum State {
+			IDLE, READING, DISPOSED
 		}
 	}
 
